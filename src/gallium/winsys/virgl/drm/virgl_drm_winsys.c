@@ -40,6 +40,7 @@
 #include "virgl/virgl_screen.h"
 #include "virgl/virgl_public.h"
 #include "virtio-gpu/virgl_protocol.h"
+#include "intercept.h"
 
 #include <xf86drm.h>
 #include <libsync.h>
@@ -253,6 +254,21 @@ virgl_drm_winsys_resource_create(struct virgl_winsys *qws,
    if (!res)
       return NULL;
 
+   dump_log("resource_create!\n");
+   if (should_dump_virgl()) {
+      fprintf(get_dump_file(), "resource_create:\n");
+      fprintf(get_dump_file(), "\ttarget: %u\n", target);
+      fprintf(get_dump_file(), "\tformat: %u\n", format);
+      fprintf(get_dump_file(), "\tbind: %u\n", bind);
+      fprintf(get_dump_file(), "\twidth: %u\n", width);
+      fprintf(get_dump_file(), "\theight: %u\n", height);
+      fprintf(get_dump_file(), "\tdepth: %u\n", depth);
+      fprintf(get_dump_file(), "\tarray_size: %u\n", array_size);
+      fprintf(get_dump_file(), "\tlast_level: %u\n", last_level);
+      fprintf(get_dump_file(), "\tnr_samples: %u\n", nr_samples);
+      fprintf(get_dump_file(), "\tsize: %u\n", size);
+   }
+
    memset(&createcmd, 0, sizeof(createcmd));
    createcmd.target = target;
    createcmd.format = pipe_to_virgl_format(format);
@@ -324,6 +340,7 @@ virgl_bo_transfer_put(struct virgl_winsys *vws,
 {
    struct virgl_drm_winsys *vdws = virgl_drm_winsys(vws);
    struct drm_virtgpu_3d_transfer_to_host tohostcmd;
+   dump_log("bo_transfer_put!\n");
 
    p_atomic_set(&res->maybe_busy, true);
 
@@ -353,6 +370,7 @@ virgl_bo_transfer_get(struct virgl_winsys *vws,
 {
    struct virgl_drm_winsys *vdws = virgl_drm_winsys(vws);
    struct drm_virtgpu_3d_transfer_from_host fromhostcmd;
+   dump_log("bo_transfer_put!\n");
 
    p_atomic_set(&res->maybe_busy, true);
 
@@ -896,14 +914,35 @@ virgl_drm_fence_create_legacy(struct virgl_winsys *vws)
    return (struct pipe_fence_handle *)fence;
 }
 
+static inline __u32 hash(char *data, size_t size) {
+    __u32 hash = 0;
+    for (size_t i = 0; i < size; ++i)
+        hash = 31 * hash + data[i];
+    return hash;
+}
+
 static int virgl_drm_winsys_submit_cmd(struct virgl_winsys *qws,
                                        struct virgl_cmd_buf *_cbuf,
                                        struct pipe_fence_handle **fence)
 {
+   static int num_dumps = 0;
    struct virgl_drm_winsys *qdws = virgl_drm_winsys(qws);
    struct virgl_drm_cmd_buf *cbuf = virgl_drm_cmd_buf(_cbuf);
    struct drm_virtgpu_execbuffer eb;
    int ret;
+   size_t blen = 4 * cbuf->base.cdw;
+   __u32 h = hash((char*)cbuf->buf, blen);
+   if (should_dump_virgl() && num_dumps < 10) {
+      printf("submit_cmd - len: %lu, hash: 0x%08x\n", blen, h);
+      fprintf(get_dump_file(), "submit_cmd - len: %lu, hash: 0x%08x\n", blen, h);
+      for (size_t i = 0; i < blen; ++i) {
+         unsigned int c = ((__u8*)cbuf->buf)[i];
+         fprintf(get_dump_file(), "%02x", c);
+      }
+      fputc('\n', get_dump_file());
+      fflush(get_dump_file());
+      ++num_dumps;
+   }
 
    if (cbuf->base.cdw == 0)
       return 0;
@@ -956,6 +995,7 @@ static int virgl_drm_get_caps(struct virgl_winsys *vws,
    struct virgl_drm_winsys *vdws = virgl_drm_winsys(vws);
    struct drm_virtgpu_get_caps args;
    int ret;
+   dump_log("get_caps!\n");
 
    virgl_ws_fill_new_caps_defaults(caps);
 
@@ -1125,6 +1165,7 @@ virgl_drm_winsys_create(int drmFD)
    struct virgl_drm_winsys *qdws;
    int drm_version;
    int ret;
+   dump_log("winsys_create!\n");
 
    for (uint32_t i = 0; i < ARRAY_SIZE(params); i++) {
       struct drm_virtgpu_getparam getparam = { 0 };
@@ -1198,6 +1239,7 @@ virgl_drm_screen_destroy(struct pipe_screen *pscreen)
 {
    struct virgl_screen *screen = virgl_screen(pscreen);
    boolean destroy;
+   dump_log("screen_destroy!\n");
 
    mtx_lock(&virgl_screen_mutex);
    destroy = --screen->refcnt == 0;
@@ -1218,6 +1260,8 @@ struct pipe_screen *
 virgl_drm_screen_create(int fd, const struct pipe_screen_config *config)
 {
    struct pipe_screen *pscreen = NULL;
+
+   dump_log("screen_create!\n");
 
    mtx_lock(&virgl_screen_mutex);
    if (!fd_tab) {
